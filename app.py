@@ -639,4 +639,4 @@ else:
         with st.form("theme_bg_form"):
             new_welcome = st.text_input("💬 ข้อความต้อนรับส่วนตัว (Welcome Message)", value=current_setting.get("welcome_msg", "ยินดีต้อนรับ"))
             
-            theme_keys = list(THEME_PAL)
+            theme_keys = list(THEME_PAL
