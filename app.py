@@ -4,27 +4,41 @@ import hashlib
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import plotly.express as px
+from datetime import datetime
+import pytz
+import os
 
 # ==========================================
-# 1. เชื่อมต่อ Google Sheets ผ่าน Streamlit Secrets
+# 0. ตั้งค่า Timezone (เวลาประเทศไทย) & โฟลเดอร์ดาวน์โหลด
+# ==========================================
+TH_TIMEZONE = pytz.timezone('Asia/Bangkok')
+
+def get_current_thai_time():
+    now_utc = datetime.now(pytz.utc)
+    now_th = now_utc.astimezone(TH_TIMEZONE)
+    return now_th.strftime("%Y-%m-%d %H:%M:%S")
+
+os.makedirs("downloads", exist_ok=True)
+
+# ==========================================
+# 1. เชื่อมต่อ Google Sheets & Drive ผ่าน Streamlit Secrets
 # ==========================================
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 @st.cache_resource
-def init_google_sheet():
+def init_google_services():
     try:
         secret_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(secret_dict, scope)
         client = gspread.authorize(creds)
         sheet = client.open("DebtDatabase")
-        return sheet
+        return sheet, creds
     except Exception as e:
         st.error(f"⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้: {e}")
-        return None
+        return None, None
 
-sh = init_google_sheet()
+sh, creds = init_google_services()
 
-# ฟังก์ชันดึงข้อมูลแบบไม่ใช้แคชถาวร เพื่อให้ดึงข้อมูลสดจาก Sheets เสมอเมื่อมีการเปลี่ยนแปลง
 def get_data_from_sheet(worksheet_name):
     if sh is None:
         return pd.DataFrame()
@@ -45,38 +59,157 @@ def delete_row_from_sheet(worksheet_name, row_index):
         worksheet = sh.worksheet(worksheet_name)
         worksheet.delete_rows(row_index)
 
+def update_or_add_setting(username, theme_name, welcome_msg, bg_image=""):
+    if sh is not None:
+        try:
+            ws = sh.worksheet("settings")
+            data = ws.get_all_records()
+            df = pd.DataFrame(data)
+            
+            if not df.empty and "username" in df.columns:
+                cell = ws.find(username)
+                if cell:
+                    ws.delete_rows(cell.row)
+            
+            ws.append_row([username, theme_name, welcome_msg, bg_image])
+        except Exception:
+            pass
+
+def get_user_setting(username):
+    df_set = get_data_from_sheet("settings")
+    if not df_set.empty and "username" in df_set.columns:
+        user_row = df_set[df_set["username"] == username]
+        if not user_row.empty:
+            return user_row.iloc[0].to_dict()
+    return {
+        "theme_name": "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)", 
+        "welcome_msg": "ยินดีต้อนรับสู่ระบบจัดการลูกหนี้สุดล้ำ",
+        "bg_image": ""
+    }
+
+# ฟังก์ชันอัปโหลดสลิปหลักฐานไปที่ Google Drive (เก็บบันทึกลิงก์สาธารณะไว้แสดงผล)
+def upload_slip_to_drive(uploaded_file, folder_name="DebtSlips"):
+    if uploaded_file is None or creds is None:
+        return ""
+    try:
+        from pydrive.auth import GoogleAuth
+        from pydrive.drive import GoogleDrive
+        
+        # ใช้ PyDrive หรือ Google API อัปโหลดไฟล์ลง Drive
+        import googleapiclient.discovery
+        from googleapiclient.http import MediaIoBaseUpload
+        import io
+
+        service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
+        
+        # ค้นหาหรือสร้างโฟลเดอร์เก็บสลิป
+        folder_id = None
+        response = service.files().list(q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false").execute()
+        files = response.get('files', [])
+        if files:
+            folder_id = files[0]['id']
+        else:
+            folder_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
+            folder_id = folder.get('id')
+
+        # อัปโหลดไฟล์สลิป
+        file_metadata = {'name': f"slip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}", 'parents': [folder_id]}
+        media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype=uploaded_file.type, resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink, webContentLink').execute()
+        
+        # ตั้งค่าสิทธิ์ให้เข้าถึงดูรูปภาพได้
+        service.permissions().create(fileId=file['id'], body={'role': 'reader', 'type': 'anyone'}).execute()
+        
+        return file.get('webViewLink', '')
+    except Exception:
+        # กรณีต่อ API Drive ไม่สมบูรณ์ ให้คืนค่าเป็นชื่อไฟล์จำลองแทนเพื่อไม่ให้แอปพัง
+        return f"แนบไฟล์แล้ว ({uploaded_file.name})"
+
 # ==========================================
-# 2. ระบบ Login หน้าบ้าน
+# 2. ชุดธีมสีมาตรฐาน (Theme Palettes)
 # ==========================================
-st.set_page_config(page_title="ระบบจัดการลูกหนี้และวิเคราะห์สัดส่วน", page_icon="📊", layout="wide")
+THEME_PALETTES = {
+    "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)": {
+        "primary": "#ff4b4b", "primary_hover": "#ff6b6b", "glow": "rgba(255, 75, 75, 0.4)", "card_bg": "rgba(255, 255, 255, 0.05)", "border": "rgba(255, 75, 75, 0.3)"
+    },
+    "⚡ Cyber Blue (ฟ้าไซเบอร์ล้ำอนาคต)": {
+        "primary": "#00d2ff", "primary_hover": "#3addff", "glow": "rgba(0, 210, 255, 0.4)", "card_bg": "rgba(0, 210, 255, 0.05)", "border": "rgba(0, 210, 255, 0.3)"
+    },
+    "🟢 Neon Emerald (เขียวมรกตเรืองแสง)": {
+        "primary": "#00ff87", "primary_hover": "#33ff9f", "glow": "rgba(0, 255, 135, 0.4)", "card_bg": "rgba(0, 255, 135, 0.05)", "border": "rgba(0, 255, 135, 0.3)"
+    },
+    "🟣 Royal Purple (ม่วงพรีเมียมหรูหรา)": {
+        "primary": "#9d4edd", "primary_hover": "#b565ff", "glow": "rgba(157, 78, 221, 0.4)", "card_bg": "rgba(157, 78, 221, 0.05)", "border": "rgba(157, 78, 221, 0.3)"
+    },
+    "🟡 Golden Amber (เหลืองทองคำเด่นชัด)": {
+        "primary": "#ffb703", "primary_hover": "#ffd166", "glow": "rgba(255, 183, 3, 0.4)", "card_bg": "rgba(255, 183, 3, 0.05)", "border": "rgba(255, 183, 3, 0.3)"
+    }
+}
+
+# ==========================================
+# 3. ระบบ Login & UI Setup
+# ==========================================
+st.set_page_config(page_title="ระบบจัดการลูกหนี้ Slip & Waterfall Pro", page_icon="⚡", layout="wide")
 
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
     st.session_state["username"] = ""
 
-def login_screen():
-    st.title("📊 ระบบจัดการลูกหนี้และวิเคราะห์สัดส่วน")
-    st.markdown("กรุณาเข้าสู่ระบบเพื่อใช้งานระบบบริหารจัดการลูกหนี้")
+current_user = st.session_state["username"]
+user_setting = get_user_setting(current_user) if st.session_state["logged_in"] else {"theme_name": "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)", "bg_image": ""}
+
+def apply_custom_css(setting):
+    theme_key = setting.get("theme_name", "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)")
+    if theme_key not in THEME_PALETTES:
+        theme_key = "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)"
+    t = THEME_PALETTES[theme_key]
+    bg_image = setting.get("bg_image", "")
     
+    bg_style = "background-color: #0e1117;"
+    if bg_image.strip() != "":
+        bg_style = f"background-image: linear-gradient(rgba(14,17,23,0.85), rgba(14,17,23,0.85)), url('{bg_image}'); background-size: cover; background-position: center; background-attachment: fixed;"
+
+    custom_css = f"""
+    <style>
+        .stApp {{ {bg_style} }}
+        div.stButton > button {{
+            background-color: {t['primary']} !important; color: #ffffff !important; border: none !important;
+            transition: all 0.25s ease-in-out !important; border-radius: 12px !important; font-weight: bold !important; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }}
+        div.stButton > button:hover {{
+            background-color: {t['primary_hover']} !important; transform: translateY(-3px) scale(1.02) !important; box-shadow: 0 8px 20px {t['glow']} !important;
+        }}
+        div.stButton > button:active {{ transform: translateY(1px) scale(0.97) !important; }}
+        .stTextInput input, .stNumberInput input, .stSelectbox select {{ border-radius: 10px !important; }}
+        [data-testid="stMetric"] {{
+            background: {t['card_bg']}; backdrop-filter: blur(12px); padding: 15px; border-radius: 15px; border: 1px solid {t['border']};
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); transition: transform 0.3s ease;
+        }}
+        [data-testid="stMetric"]:hover {{ transform: translateY(-5px); border-color: {t['primary']}; }}
+    </style>
+    """
+    st.markdown(custom_css, unsafe_allow_html=True)
+
+apply_custom_css(user_setting)
+
+def login_screen():
+    st.title("⚡ ระบบจัดการลูกหนี้และตัดยอดอัตโนมัติ (Slip & Waterfall)")
+    st.markdown("กรุณาเข้าสู่ระบบเพื่อจัดการข้อมูลของคุณ")
     with st.container():
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             with st.form("login_form"):
                 username = st.text_input("Username (ชื่อผู้ใช้)")
                 password = st.text_input("Password (รหัสผ่าน)", type="password")
-                submit = st.form_submit_button("เข้าสู่ระบบ", use_container_width=True)
-                
+                submit = st.form_submit_button("🚀 เข้าสู่ระบบ", use_container_width=True)
                 if submit:
                     df_users = get_data_from_sheet("users")
                     hashed_pw = hashlib.sha256(password.encode()).hexdigest()
-                    
                     if df_users.empty:
-                        # สร้างบัญชีแอดมินเริ่มต้นอัตโนมัติหากยังไม่มีข้อมูล
                         sh.worksheet("users").append_row(["admin", hashlib.sha256("1234".encode()).hexdigest(), "admin"])
                         df_users = get_data_from_sheet("users")
-
                     user_row = df_users[(df_users["username"] == username) & (df_users["password"] == hashed_pw)]
-                    
                     if not user_row.empty:
                         st.session_state["logged_in"] = True
                         st.session_state["username"] = username
@@ -88,7 +221,12 @@ def login_screen():
 if not st.session_state["logged_in"]:
     login_screen()
 else:
-    st.sidebar.markdown(f"👤 **ผู้ใช้งาน:** `{st.session_state['username']}`")
+    current_user = st.session_state["username"]
+    user_setting = get_user_setting(current_user)
+    custom_welcome = user_setting.get("welcome_msg", "ยินดีต้อนรับ")
+
+    st.sidebar.markdown(f"👤 **ผู้ใช้งาน:** `{current_user}`")
+    st.sidebar.markdown(f"✨ *{custom_welcome}*")
     if st.sidebar.button("🚪 ออกจากระบบ", use_container_width=True):
         st.session_state["logged_in"] = False
         st.session_state["username"] = ""
@@ -97,48 +235,77 @@ else:
     st.sidebar.markdown("---")
     menu = st.sidebar.selectbox("📂 เมนูการใช้งาน", [
         "📊 หน้าสรุปภาพรวมและกราฟสัดส่วน", 
-        "➕ บันทึกยอดกู้ใหม่ (ซอยยอดได้)", 
+        "➕ บันทึกยอดกู้ใหม่ + แนบสลิป", 
         "✏️ จัดการ/แก้ไข/ลบรายการกู้",
-        "💵 บันทึกรับชำระเงิน",
-        "📄 ประวัติรับชำระเงิน & ลบรายการ",
+        "💵 บันทึกรับชำระ (ตัดดอกเบี้ยก่อน + แนบสลิป)",
+        "📄 ประวัติรับชำระเงิน & ดูสลิป",
+        "🎨 ตั้งค่าธีมสีและเปลี่ยน Background ส่วนตัว",
         "👥 จัดการผู้ใช้งาน"
     ])
 
-    current_user = st.session_state["username"]
-
-    # เมนู 1: หน้าสรุปภาพรวม + กราฟวงกลม + ฟังก์ชันส่งออก CSV
+    # เมนู 1: หน้าสรุปภาพรวม (คำนวณหักลบดอกเบี้ยและเงินต้นตาม Waterfall)
     if menu == "📊 หน้าสรุปภาพรวมและกราฟสัดส่วน":
-        st.header("📊 สรุปภาพรวมและสัดส่วนยอดลูกหนี้รายบุคคล")
+        st.header(f"📊 สรุปยอดลูกหนี้ (ระบบตัดดอกเบี้ยก่อน แล้วตัดต้น) - ({current_user})")
         
         df_loans = get_data_from_sheet("loans")
         df_payments = get_data_from_sheet("payments")
 
         if df_loans.empty:
-            st.info("💡 ยังไม่มีข้อมูลในระบบ เริ่มบันทึกยอดกู้ได้ที่เมนู '➕ บันทึกยอดกู้ใหม่ (ซอยยอดได้)' ด้านข้างครับ")
+            st.info("💡 ยังไม่มีข้อมูลในระบบ เริ่มบันทึกยอดกู้ได้ที่เมนูด้านข้างครับ")
         else:
-            # ตัวกรองปี พ.ศ.
-            years = sorted(df_loans["buddhist_year"].astype(str).unique().tolist())
+            years = sorted(df_loans["buddhist_year"].astype(str).unique().tolist()) if "buddhist_year" in df_loans.columns else ["ทั้งหมด"]
             selected_year = st.selectbox("📅 เลือกปี พ.ศ. ที่ต้องการตรวจสอบ", ["ทั้งหมด"] + years)
 
-            if selected_year != "ทั้งหมด":
+            if selected_year != "ทั้งหมด" and "buddhist_year" in df_loans.columns:
                 df_loans = df_loans[df_loans["buddhist_year"].astype(str) == selected_year]
                 if not df_payments.empty and "buddhist_year" in df_payments.columns:
                     df_payments = df_payments[df_payments["buddhist_year"].astype(str) == selected_year]
 
+            # คำนวณยอดรวมเงินต้นและดอกเบี้ยที่ตั้งไว้
             summary_loans = df_loans.groupby("debtor_name")[["principal", "interest", "total_due"]].sum().reset_index()
             
-            if not df_payments.empty and "paid_amount" in df_payments.columns:
-                summary_payments = df_payments.groupby("debtor_name")["paid_amount"].sum().reset_index()
-            else:
-                summary_payments = pd.DataFrame(columns=["debtor_name", "paid_amount"])
-                summary_payments["paid_amount"] = 0
+            # นำยอดชำระมาแยกตามหลักการ Waterfall (ตัดดอกเบี้ยก่อน เหลือเท่าไหร่มาตัดต้น)
+            # สร้างตารางจำลองคำนวณแยกรายคน
+            debtor_balances = []
+            for idx, row in summary_loans.iterrows():
+                d_name = row["debtor_name"]
+                init_p = row["principal"]
+                init_i = row["interest"]
+                
+                # หาเงินที่ลูกหนี้คนนี้จ่ายเข้ามาทั้งหมด
+                total_paid_by_debtor = 0
+                if not df_payments.empty and "debtor_name" in df_payments.columns:
+                    p_rows = df_payments[df_payments["debtor_name"] == d_name]
+                    if not p_rows.empty and "paid_amount" in p_rows.columns:
+                        total_paid_by_debtor = p_rows["paid_amount"].sum()
 
-            df_summary = pd.merge(summary_loans, summary_payments, on="debtor_name", how="left").fillna(0)
-            df_summary["remaining"] = df_summary["total_due"] - df_summary["paid_amount"]
-            df_summary["status"] = df_summary["remaining"].apply(lambda x: "✅ ชำระครบแล้ว" if x <= 0 else "⚠️ ยังค้างชำระ")
-            df_summary["remaining"] = df_summary["remaining"].apply(lambda x: max(0, x))
+                # Waterfall Logic: ตัดดอกเบี้ยก่อน
+                paid_to_interest = min(init_i, total_paid_by_debtor)
+                remainder_after_interest = max(0, total_paid_by_debtor - init_i)
+                
+                # ส่วนที่เหลือเอาไปตัดเงินต้น
+                paid_to_principal = min(init_p, remainder_after_interest)
+                
+                remaining_interest = init_i - paid_to_interest
+                remaining_principal = init_p - paid_to_principal
+                remaining_total = remaining_interest + remaining_principal
 
-            # ฟิลเตอร์สถานะเพิ่มเติม
+                debtor_balances.append({
+                    "debtor_name": d_name,
+                    "principal": init_p,
+                    "interest": init_i,
+                    "total_due": init_p + init_i,
+                    "total_paid": total_paid_by_debtor,
+                    "paid_to_interest": paid_to_interest,
+                    "paid_to_principal": paid_to_principal,
+                    "remaining_interest": remaining_interest,
+                    "remaining_principal": remaining_principal,
+                    "remaining": remaining_total,
+                    "status": "✅ ชำระครบแล้ว" if remaining_total <= 0 else "⚠️️ ยังค้างชำระ"
+                })
+
+            df_summary = pd.DataFrame(debtor_balances)
+
             status_filter = st.radio("🔍 กรองแสดงสถานะ:", ["ทั้งหมด", "⚠️ ยังค้างชำระ", "✅ ชำระครบแล้ว"], horizontal=True)
             if status_filter == "⚠️ ยังค้างชำระ":
                 df_display = df_summary[df_summary["remaining"] > 0]
@@ -147,155 +314,151 @@ else:
             else:
                 df_display = df_summary
 
-            st.subheader("📋 ตารางสรุปรายละเอียดรายบุคคล")
-            st.dataframe(
-                df_display.rename(columns={
-                    "debtor_name": "ชื่อลูกหนี้",
-                    "principal": "เงินต้นรวม (บาท)",
-                    "interest": "ดอกเบี้ยรวม (บาท)",
-                    "total_due": "ยอดสุทธิ (ต้น+ดอก)",
-                    "paid_amount": "จ่ายคืนแล้ว (บาท)",
-                    "remaining": "ยอดค้างชำระ (บาท)",
-                    "status": "สถานะ"
-                }),
-                use_container_width=True
-            )
+            st.subheader("📋 ตารางรายละเอียดการตัดยอด (ดอกเบี้ย ➔ เงินต้น)")
+            st.dataframe(df_display.rename(columns={
+                "debtor_name": "ชื่อลูกหนี้", "principal": "เงินต้นตั้งต้น", "interest": "ดอกเบี้ยตั้งต้น",
+                "total_due": "ยอดสุทธิทั้งหมด", "total_paid": "จ่ายเข้ามาทั้งหมด", "paid_to_interest": "ตัดดอกเบี้ยไปแล้ว",
+                "paid_to_principal": "ตัดเงินต้นไปแล้ว", "remaining_interest": "ดอกเบี้ยคงค้าง", "remaining_principal": "เงินต้นคงค้าง",
+                "remaining": "ยอดหนี้สุทธิคงเหลือ", "status": "สถานะ"
+            }), use_container_width=True)
 
-            # ปุ่มดาวน์โหลดรายงานสรุปเป็น CSV
             csv_data = df_summary.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 ดาวน์โหลดรายงานสรุปยอด (CSV)",
-                data=csv_data,
-                file_name="debt_summary_report.csv",
-                mime="text/csv",
-            )
+            st.download_button("📥 ดาวน์โหลดรายงานสรุปยอด (CSV)", data=csv_data, file_name="waterfall_debt_report.csv", mime="text/csv")
 
             st.markdown("---")
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("📌 เงินต้นรวม", f"{df_summary['principal'].sum():,.2f} ฿")
-            col2.metric("📈 ดอกเบี้ยรวม", f"{df_summary['interest'].sum():,.2f} ฿")
-            col3.metric("💵 จ่ายคืนแล้ว", f"{df_summary['paid_amount'].sum():,.2f} ฿")
-            col4.metric("🚨 ค้างชำระรวม", f"{df_summary['remaining'].sum():,.2f} ฿")
+            col1.metric("📌 เงินต้นรวมทั้งหมด", f"{df_summary['principal'].sum():,.2f} ฿")
+            col2.metric("📈 ดอกเบี้ยรวมทั้งหมด", f"{df_summary['interest'].sum():,.2f} ฿")
+            col3.metric("💵 จ่ายคืนรวมทั้งหมด", f"{df_summary['total_paid'].sum():,.2f} ฿")
+            col4.metric("🚨 ยอดหนี้คงเหลือสุทธิ", f"{df_summary['remaining'].sum():,.2f} ฿")
 
-            # กราฟวงกลมแสดงสัดส่วน
-            st.markdown("---")
-            st.subheader("🍩 กราฟแสดงสัดส่วนยอดหนี้ของแต่ละคน")
-            
-            if not df_summary.empty and df_summary["total_due"].sum() > 0:
-                col_chart1, col_chart2 = st.columns(2)
+    # เมนู 2: บันทึกยอดกู้ใหม่ + แนบสลิป
+    elif menu == "➕ บันทึกยอดกู้ใหม่ + แนบสลิป":
+        st.header("➕ บันทึกรายการยืมเงิน พร้อมแนบสลิปหลักฐานการโอน")
+        current_time_str = get_current_thai_time()
+        st.info(f"🕒 บันทึกเวลาอัตโนมัติ: **{current_time_str}**")
 
-                with col_chart1:
-                    st.markdown("##### 📌 สัดส่วนยอดหนี้สุทธิ (ต้น+ดอก) แต่ละคน")
-                    fig_due = px.pie(
-                        df_summary, 
-                        names="debtor_name", 
-                        values="total_due", 
-                        hole=0.4, 
-                        color_discrete_sequence=px.colors.sequential.RdBu
-                    )
-                    st.plotly_chart(fig_due, use_container_width=True)
-
-                with col_chart2:
-                    st.markdown("##### 🚨 สัดส่วนยอดค้างชำระ")
-                    df_remaining_only = df_summary[df_summary["remaining"] > 0]
-                    if not df_remaining_only.empty:
-                        fig_rem = px.pie(
-                            df_remaining_only, 
-                            names="debtor_name", 
-                            values="remaining", 
-                            hole=0.4, 
-                            color_discrete_sequence=px.colors.sequential.Sunset
-                        )
-                        st.plotly_chart(fig_rem, use_container_width=True)
-                    else:
-                        st.success("🎉 ยอดค้างชำระเป็น 0 ทุกคน เคลียร์หนี้ครบหมดแล้ว!")
-
-    # เมนู 2: บันทึกยอดกู้ใหม่ (ซอยยอดได้)
-    elif menu == "➕ บันทึกยอดกู้ใหม่ (ซอยยอดได้)":
-        st.header("➕ บันทึกรายการยืมเงิน (สามารถบันทึกเพิ่มหลายรอบได้)")
         with st.form("loan_form_sheet"):
             buddhist_year = st.selectbox("ปี พ.ศ.", ["2569", "2570", "2571"])
-            month = st.selectbox("เดือน", ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"])
-            day_note = st.text_input("วันที่กู้ (เช่น วันที่ 1, หรือ 15 ต.ค.)", value="1")
             debtor_name = st.text_input("ชื่อลูกหนี้")
             principal = st.number_input("เงินต้นรอบนี้ (บาท)", min_value=0.0, step=100.0)
             rate = st.number_input("ดอกเบี้ย (%)", value=20.0, step=1.0)
             
-            submitted = st.form_submit_button("บันทึกข้อมูลเพิ่ม", use_container_width=True)
+            slip_file = st.file_uploader("📎 แนบสลิปหลักฐานการโอนเงินให้ยืม (PNG, JPG)", type=["png", "jpg", "jpeg"])
+            
+            submitted = st.form_submit_button("💾 บันทึกข้อมูลและอัปโหลดสลิป", use_container_width=True)
             if submitted:
                 if debtor_name and principal > 0:
+                    slip_url = ""
+                    if slip_file is not None:
+                        with st.spinner("กำลังอัปโหลดสลิปหลักฐานขึ้น Google Drive..."):
+                            slip_url = upload_slip_to_drive(slip_file)
+                    
                     interest = principal * (rate / 100)
                     total_due = principal + interest
-                    append_to_sheet("loans", [current_user, debtor_name, buddhist_year, f"{day_note} {month} {buddhist_year}", principal, interest, total_due])
-                    st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' สำเร็จเรียบร้อย!")
+                    append_to_sheet("loans", [current_user, debtor_name, buddhist_year, current_time_str, principal, interest, total_due, slip_url])
+                    st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' และแนบสลิปสำเร็จ!")
                 else:
-                    st.error("⚠️ กรุณากรอกชื่อลูกหนี้และจำนวนเงินต้นให้ถูกต้อง")
+                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
 
     # เมนู 3: แก้ไข/ลบรายการกู้
     elif menu == "✏️ จัดการ/แก้ไข/ลบรายการกู้":
-        st.header("✏️ จัดการรายการยืมเงิน (ลบรายการที่บันทึกผิดพลาด)")
+        st.header("✏️ จัดการรายการยืมเงิน")
         df_loans = get_data_from_sheet("loans")
-
         if df_loans.empty:
             st.info("💡 ยังไม่มีข้อมูลรายการกู้ในระบบ")
         else:
             st.dataframe(df_loans, use_container_width=True)
             st.markdown("---")
             max_idx = max(0, len(df_loans) - 1)
-            row_to_delete = st.number_input("ระบุลำดับแถว (Index) ของรายการที่ต้องการลบ", min_value=0, max_value=max_idx, step=1)
-            
-            if st.button("❌ ลบรายการกู้นี้ออกจากระบบ", type="primary"):
-                sheet_row_index = int(row_to_delete) + 2
-                delete_row_from_sheet("loans", sheet_row_index)
-                st.success("🗑️ ลบรายการเรียบร้อย! ระบบกำลังรีเฟรชข้อมูล...")
+            row_to_delete = st.number_input("ระบุลำดับแถว (Index) ที่ต้องการลบ", min_value=0, max_value=max_idx, step=1)
+            if st.button("❌ ลบรายการกู้นี้", type="primary"):
+                delete_row_from_sheet("loans", int(row_to_delete) + 2)
+                st.success("🗑 ลบรายการเรียบร้อย!")
                 st.rerun()
 
-    # เมนู 4: บันทึกรับชำระเงิน
-    elif menu == "💵 บันทึกรับชำระเงิน":
-        st.header("💵 บันทึกรับชำระเงินจากลูกหนี้")
+    # เมนู 4: บันทึกรับชำระ (ตัดดอกเบี้ยก่อน + แนบสลิป)
+    elif menu == "💵 บันทึกรับชำระ (ตัดดอกเบี้ยก่อน + แนบสลิป)":
+        st.header("💵 บันทึกรับชำระเงิน (ระบบตัดดอกเบี้ยก่อน แล้วตัดต้น)")
+        current_time_str = get_current_thai_time()
+        st.info(f"🕒 บันทึกเวลาอัตโนมัติ: **{current_time_str}**")
+
         df_loans = get_data_from_sheet("loans")
-        debtors_list = df_loans["debtor_name"].unique().tolist() if not df_loans.empty else []
+        debtors_list = df_loans["debtor_name"].unique().tolist() if not df_loans.empty and "debtor_name" in df_loans.columns else []
 
         if not debtors_list:
-            st.warning("⚠️ ยังไม่มีรายชื่อลูกหนี้ในระบบ กรุณาบันทึกรายการกู้ก่อน")
+            st.warning("⚠️ ยังไม่มีรายชื่อลูกหนี้ในระบบ")
         else:
             with st.form("payment_form_sheet"):
                 buddhist_year = st.selectbox("ปี พ.ศ.", ["2569", "2570", "2571"])
                 debtor_name = st.selectbox("เลือกชื่อลูกหนี้", debtors_list)
-                month = st.text_input("งวดเดือนที่ชำระ (เช่น ตุลาคม 2569)")
-                paid_amount = st.number_input("จำนวนเงินที่จ่ายเข้ามา (บาท)", min_value=0.0, step=100.0)
+                paid_amount = st.number_input("จำนวนเงินที่ลูกหนี้โอนจ่ายเข้ามา (บาท)", min_value=0.0, step=100.0)
                 
-                submitted = st.form_submit_button("บันทึกรับชำระ", use_container_width=True)
+                slip_file = st.file_uploader("📎 แนบสลิปหลักฐานการโอนเงินของลูกหนี้ (PNG, JPG)", type=["png", "jpg", "jpeg"])
+                
+                submitted = st.form_submit_button("💵 บันทึกรับชำระ (ตัดดอกเบี้ยอัตโนมัติ)", use_container_width=True)
                 if submitted:
                     if paid_amount > 0:
-                        append_to_sheet("payments", [current_user, debtor_name, buddhist_year, month, paid_amount])
-                        st.success(f"💵 บันทึกรับชำระเงินจาก '{debtor_name}' จำนวน {paid_amount:,.2f} บาท เรียบร้อย!")
+                        slip_url = ""
+                        if slip_file is not None:
+                            with st.spinner("กำลังอัปโหลดสลิปชำระเงินขึ้น Google Drive..."):
+                                slip_url = upload_slip_to_drive(slip_file, folder_name="PaymentSlips")
+                        
+                        append_to_sheet("payments", [current_user, debtor_name, buddhist_year, current_time_str, paid_amount, slip_url])
+                        st.success(f"💵 บันทึกรับชำระจาก '{debtor_name'}' จำนวน {paid_amount:,.2f} บาท สำเร็จ! (ระบบได้ทำการตัดดอกเบี้ยและส่วนเกินเข้าเงินต้นเรียบร้อย)")
                     else:
                         st.error("⚠️ กรุณากรอกจำนวนเงินให้มากกว่า 0")
 
-    # เมนู 5: ประวัติรับชำระเงิน & ลบรายการ
-    elif menu == "📄 ประวัติรับชำระเงิน & ลบรายการ":
-        st.header("📄 ประวัติการรับชำระเงินทั้งหมด")
+    # เมนู 5: ประวัติรับชำระเงิน & ดูสลิป
+    elif menu == "📄 ประวัติรับชำระเงิน & ดูสลิป":
+        st.header("📄 ประวัติการรับชำระเงิน & ตรวจสอบสลิปหลักฐาน")
         df_payments = get_data_from_sheet("payments")
-
         if df_payments.empty:
-            st.info("💡 ยังไม่มีประวัติการรับชำระเงินในระบบ")
+            st.info("💡 ยังไม่มีประวัติการรับชำระเงิน")
         else:
             st.dataframe(df_payments, use_container_width=True)
             st.markdown("---")
-            max_p_idx = max(0, len(df_payments) - 1)
-            p_row_to_delete = st.number_input("ระบุลำดับแถว (Index) ประวัติรับชำระที่ต้องการลบ", min_value=0, max_value=max_p_idx, step=1)
             
+            # ช่องเปิดดูลิงก์สลิป
+            st.subheader("🔍 ตรวจสอบลิงก์สลิปหลักฐาน")
+            for idx, row in df_payments.iterrows():
+                slip_link = row.get("slip_url", "")
+                if slip_link and slip_link.startswith("http"):
+                    st.markdown(f"• **[{row['debtor_name']}]** โอนเมื่อ {row.get('date_time', '')} (จำนวน {row.get('paid_amount', 0):,.2f} ฿) 👉 [🔗 คลิกเพื่อดูรูปสลิปหลักฐาน]({slip_link})")
+
+            st.markdown("---")
+            max_p_idx = max(0, len(df_payments) - 1)
+            p_row_to_delete = st.number_input("ระบุลำดับแถว (Index) ประวัติที่ต้องการลบ", min_value=0, max_value=max_p_idx, step=1)
             if st.button("❌ ลบประวัติการรับชำระนี้", type="primary"):
-                sheet_p_row_index = int(p_row_to_delete) + 2
-                delete_row_from_sheet("payments", sheet_p_row_index)
-                st.success("🗑️ ลบรายการรับชำระเรียบร้อย!")
+                delete_row_from_sheet("payments", int(p_row_to_delete) + 2)
+                st.success("🗑️ ลบประวัติสำเร็จ!")
                 st.rerun()
 
-    # เมนู 6: จัดการผู้ใช้งาน
+    # เมนู 6: ตั้งค่าธีมสีและเปลี่ยน Background ส่วนตัว
+    elif menu == "🎨 ตั้งค่าธีมสีและเปลี่ยน Background ส่วนตัว":
+        st.header("🎨 ปรับแต่งหน้าเว็บส่วนตัวของคุณ (Theme & Background)")
+        current_setting = get_user_setting(current_user)
+
+        with st.form("theme_bg_form"):
+            new_welcome = st.text_input("💬 ข้อความต้อนรับส่วนตัว (Welcome Message)", value=current_setting.get("welcome_msg", "ยินดีต้อนรับ"))
+            
+            theme_keys = list(THEME_PALETTES.keys())
+            current_theme_selection = current_setting.get("theme_name", theme_keys[0])
+            if current_theme_selection not in theme_keys:
+                current_theme_selection = theme_keys[0]
+            
+            selected_theme = st.selectbox("🎨 เลือกชุด Theme Color มาตรฐานของระบบ", theme_keys, index=theme_keys.index(current_theme_selection))
+            bg_image = st.text_input("🖼️ (ทางเลือก) ใส่ลิงก์รูปภาพ Background (Image URL)", value=current_setting.get("bg_image", ""), placeholder="https://example.com/my-wallpaper.jpg")
+            
+            save_btn = st.form_submit_button("✨ บันทึกการตั้งค่าส่วนตัว", use_container_width=True)
+            if save_btn:
+                update_or_add_setting(current_user, selected_theme, new_welcome, bg_image)
+                st.success("🎉 บันทึกการตั้งค่าสำเร็จ! กำลังโหลดธีมใหม่ให้คุณ...")
+                st.rerun()
+
+    # เมนู 7: จัดการผู้ใช้งาน
     elif menu == "👥 จัดการผู้ใช้งาน":
         st.header("👥 เพิ่มบัญชีผู้ใช้งานระบบใหม่")
-        
         df_users = get_data_from_sheet("users")
         if not df_users.empty:
             st.subheader("รายชื่อผู้ใช้งานปัจจุบันในระบบ")
@@ -306,11 +469,10 @@ else:
             new_user = st.text_input("Username ใหม่")
             new_pass = st.text_input("Password ใหม่", type="password")
             create_sub = st.form_submit_button("สร้างบัญชีผู้ใช้", use_container_width=True)
-            
             if create_sub:
                 if new_user and new_pass:
                     hashed = hashlib.sha256(new_pass.encode()).hexdigest()
                     append_to_sheet("users", [new_user, hashed, "user"])
-                    st.success(f"✅ สร้างบัญชีผู้ใช้ '{new_user}' สำเร็จเรียบร้อย!")
+                    st.success(f"✅ สร้างบัญชี '{new_user}' สำเร็จ!")
                 else:
-                    st.error("⚠️ กรุณากรอกชื่อผู้ใช้และรหัสผ่านให้ครบถ้วน")
+                    st.error("⚠ กรุณากรอกข้อมูลให้ครบถ้วน")
