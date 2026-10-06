@@ -138,4 +138,4 @@ else:
                     "principal": "เงินต้นรวม (บาท)",
                     "interest": "ดอกเบี้ยรวม (บาท)",
                     "total_due": "ยอดสุทธิ (ต้น+ดอก)",
-                    "paid_amount": "จ่าย
+                    "paid_amount": "จ่าย"
