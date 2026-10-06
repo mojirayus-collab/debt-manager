@@ -2,23 +2,20 @@ import streamlit as st
 import pandas as pd
 import hashlib
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 import plotly.express as px
 
 # ==========================================
-# 1. เชื่อมต่อ Google Sheets ผ่าน Streamlit Secrets (แบบใหม่)
+# 1. เชื่อมต่อ Google Sheets ผ่าน Streamlit Secrets
 # ==========================================
-scopes = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 @st.cache_resource
 def init_google_sheet():
     try:
         # ดึงค่าจากความลับที่ซ่อนไว้ใน Streamlit Cloud
         secret_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(secret_dict, scopes=scopes)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(secret_dict, scope)
         client = gspread.authorize(creds)
         sheet = client.open("DebtDatabase")
         return sheet
@@ -138,4 +135,68 @@ else:
                     "principal": "เงินต้นรวม (บาท)",
                     "interest": "ดอกเบี้ยรวม (บาท)",
                     "total_due": "ยอดสุทธิ (ต้น+ดอก)",
-                    "paid_amount": "จ่าย"
+                    "paid_amount": "จ่ายคืนแล้ว (บาท)",
+                    "remaining": "ยอดค้างชำระ (บาท)",
+                    "status": "สถานะ"
+                }),
+                use_container_width=True
+            )
+
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("📌 เงินต้นรวม", f"{df_summary['principal'].sum():,.2f} ฿")
+            col2.metric("📈 ดอกเบี้ยรวม", f"{df_summary['interest'].sum():,.2f} ฿")
+            col3.metric("💵 จ่ายคืนแล้ว", f"{df_summary['paid_amount'].sum():,.2f} ฿")
+            col4.metric("🚨 ค้างชำระรวม", f"{df_summary['remaining'].sum():,.2f} ฿")
+
+            # กราฟวงกลม
+            st.markdown("---")
+            st.subheader("🍩 กราฟแสดงสัดส่วนยอดหนี้ของแต่ละคน")
+            
+            if not df_summary.empty and df_summary["total_due"].sum() > 0:
+                col_chart1, col_chart2 = st.columns(2)
+
+                with col_chart1:
+                    st.markdown("##### 📌 สัดส่วนยอดหนี้สุทธิ (ต้น+ดอก) แต่ละคน")
+                    fig_due = px.pie(df_summary, names="debtor_name", values="total_due", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+                    st.plotly_chart(fig_due, use_container_width=True)
+
+                with col_chart2:
+                    st.markdown("##### 🚨 สัดส่วนยอดค้างชำระ")
+                    df_remaining_only = df_summary[df_summary["remaining"] > 0]
+                    if not df_remaining_only.empty:
+                        fig_rem = px.pie(df_remaining_only, names="debtor_name", values="remaining", hole=0.4, color_discrete_sequence=px.colors.sequential.Sunset)
+                        st.plotly_chart(fig_rem, use_container_width=True)
+                    else:
+                        st.success("🎉 ยอดค้างชำระเป็น 0 ทุกคน เคลียร์หนี้ครบหมดแล้ว!")
+
+    # เมนู 2: บันทึกยอดกู้ใหม่ (ซอยยอด)
+    elif menu == "➕ บันทึกยอดกู้ใหม่ (ซอยยอดได้)":
+        st.header("➕ บันทึกรายการยืมเงิน (สามารถบันทึกเพิ่มหลายรอบได้)")
+        with st.form("loan_form_sheet"):
+            buddhist_year = st.selectbox("ปี พ.ศ.", ["2569", "2570", "2571"])
+            month = st.selectbox("เดือน", ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"])
+            day_note = st.text_input("วันที่กู้ (เช่น วันที่ 1, หรือ 15 ต.ค.)", value="1")
+            debtor_name = st.text_input("ชื่อลูกหนี้")
+            principal = st.number_input("เงินต้นรอบนี้ (บาท)", min_value=0.0, step=100.0)
+            rate = st.number_input("ดอกเบี้ย (%)", value=20.0, step=1.0)
+            
+            submitted = st.form_submit_button("บันทึกข้อมูลเพิ่ม")
+            if submitted:
+                if debtor_name and principal > 0:
+                    interest = principal * (rate / 100)
+                    total_due = principal + interest
+                    append_to_sheet("loans", [current_user, debtor_name, buddhist_year, f"{day_note} {month} {buddhist_year}", principal, interest, total_due])
+                    st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' สำเร็จ!")
+                else:
+                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
+
+    # เมนู 3: แก้ไข/ลบรายการกู้
+    elif menu == "✏️ จัดการ/แก้ไข/ลบรายการกู้":
+        st.header("✏️ จัดการรายการยืมเงิน (ลบรายการที่ผิดพลาด)")
+        df_loans = get_data_from_sheet("loans")
+
+        if df_loans.empty:
+            st.info("ยังไม่มีข้อมูลรายการกู้ในระบบ")
+        else:
+            st.dataframe(df_loans, use_container_width=
