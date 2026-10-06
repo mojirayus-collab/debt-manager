@@ -175,7 +175,7 @@ def apply_custom_css(setting):
         .stApp {{
             {bg_style}
             animation: fadeIn 0.6s ease-out;
-        }
+        }}
 
         /* แต่งเอฟเฟกต์ปุ่มกด (Buttons) ให้ขยับได้ มีเงานีออน */
         div.stButton > button {{
