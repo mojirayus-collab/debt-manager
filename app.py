@@ -161,7 +161,6 @@ def apply_custom_css(setting):
 
     custom_css = f"""
     <style>
-        /* Animation keyframes สำหรับความเคลื่อนไหว */
         @keyframes fadeIn {{
             from {{ opacity: 0; transform: translateY(10px); }}
             to {{ opacity: 1; transform: translateY(0); }}
@@ -177,7 +176,6 @@ def apply_custom_css(setting):
             animation: fadeIn 0.6s ease-out;
         }}
 
-        /* แต่งเอฟเฟกต์ปุ่มกด (Buttons) ให้ขยับได้ มีเงานีออน */
         div.stButton > button {{
             background: linear-gradient(135deg, {t['primary']} 0%, {t['primary_hover']} 100%) !important;
             color: #ffffff !important;
@@ -199,7 +197,6 @@ def apply_custom_css(setting):
             transform: translateY(1px) scale(0.97) !important;
         }}
 
-        /* แต่งกล่อง Input / Select ให้โค้งมนและเรืองแสงเวลาคลิก */
         .stTextInput input, .stNumberInput input, .stSelectbox select {{
             background-color: rgba(255, 255, 255, 0.04) !important;
             border: 1px solid rgba(255, 255, 255, 0.12) !important;
@@ -212,7 +209,6 @@ def apply_custom_css(setting):
             box-shadow: 0 0 12px {t['glow']} !important;
         }}
 
-        /* แต่ง Metric Cards สไตล์ Glassmorphism ขยับลอยได้เมื่อเอาเมาส์ชี้ */
         [data-testid="stMetric"] {{
             background: {t['card_bg']};
             backdrop-filter: blur(16px);
@@ -230,16 +226,13 @@ def apply_custom_css(setting):
             box-shadow: 0 15px 35px {t['glow']};
         }}
 
-        /* แต่งตาราง DataFrame ให้ดูพรีเมียม ขอบมน */
         [data-testid="stDataFrame"] {{
             border-radius: 15px;
             overflow: hidden;
-            box-style: border-box;
             border: 1px solid rgba(255, 255, 255, 0.1);
             box-shadow: 0 8px 32px rgba(0,0,0,0.3);
         }}
 
-        /* แต่งกล่อง Sidebar เมนู */
         [data-testid="stSidebar"] {{
             background-color: rgba(11, 15, 25, 0.95);
             backdrop-filter: blur(10px);
@@ -310,7 +303,6 @@ else:
         df_loans = get_data_from_sheet("loans")
         df_payments = get_data_from_sheet("payments")
 
-        # ระบบ Smart Alert ตรวจสอบกำหนดชำระเหลือน้อยกว่าหรือเท่ากับ 3 วัน
         if not df_loans.empty and "date_time" in df_loans.columns:
             today_date = datetime.now(TH_TIMEZONE).date()
             urgent_alerts = []
@@ -647,39 +639,4 @@ else:
         with st.form("theme_bg_form"):
             new_welcome = st.text_input("💬 ข้อความต้อนรับส่วนตัว (Welcome Message)", value=current_setting.get("welcome_msg", "ยินดีต้อนรับ"))
             
-            theme_keys = list(THEME_PALETTES.keys())
-            current_theme_selection = current_setting.get("theme_name", theme_keys[0])
-            if current_theme_selection not in theme_keys:
-                current_theme_selection = theme_keys[0]
-            
-            selected_theme = st.selectbox("🎨 เลือกชุด Theme Color มาตรฐานของระบบ", theme_keys, index=theme_keys.index(current_theme_selection))
-            bg_image = st.text_input("🖼️ (ทางเลือก) ใส่ลิงก์รูปภาพ Background (Image URL)", value=current_setting.get("bg_image", ""), placeholder="https://example.com/my-wallpaper.jpg")
-            
-            save_btn = st.form_submit_button("✨ บันทึกการตั้งค่าส่วนตัว", use_container_width=True)
-            if save_btn:
-                update_or_add_setting(current_user, selected_theme, new_welcome, bg_image)
-                st.success("🎉 บันทึกการตั้งค่าสำเร็จ! กำลังโหลดธีมใหม่ให้คุณ...")
-                st.rerun()
-
-    # เมนู: จัดการผู้ใช้งาน
-    elif menu == "👥 จัดการผู้ใช้งาน":
-        st.header("👥 เพิ่มบัญชีผู้ใช้งานระบบใหม่")
-        df_users = get_data_from_sheet("users")
-        if not df_users.print if not df_users.empty else True:
-            pass
-        if not df_users.empty:
-            st.subheader("รายชื่อผู้ใช้งานปัจจุบันในระบบ")
-            st.dataframe(df_users[["username", "role"]], use_container_width=True)
-            st.markdown("---")
-
-        with st.form("new_user_sheet"):
-            new_user = st.text_input("Username ใหม่")
-            new_pass = st.text_input("Password ใหม่", type="password")
-            create_sub = st.form_submit_button("สร้างบัญชีผู้ใช้", use_container_width=True)
-            if create_sub:
-                if new_user and new_pass:
-                    hashed = hashlib.sha256(new_pass.encode()).hexdigest()
-                    append_to_sheet("users", [new_user, hashed, "user"])
-                    st.success(f"✅ สร้างบัญชี '{new_user}' สำเร็จ!")
-                else:
-                    st.error("⚠ กรุณากรอกข้อมูลให้ครบถ้วน")
+            theme_keys = list(THEME_PAL
