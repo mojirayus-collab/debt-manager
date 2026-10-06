@@ -289,8 +289,9 @@ else:
                 u_line = "ไม่มีข้อมูล"
                 if "line_id" in df_loans.columns:
                     l_rows = df_loans[df_loans["debtor_name"] == d_name]
-                    if not l_rows.empty and "line_id" in l_rows.iloc[0]:
-                        u_line = l_rows.iloc[0]["line_id"] if l_rows.iloc[0]["line_id"] else "ไม่ได้ระบุ"
+                    if not l_rows.empty and "line_id" in l_rows.columns:
+                        val = l_rows.iloc[0]["line_id"]
+                        u_line = val if val else "ไม่ได้ระบุ"
 
                 debtor_balances.append({
                     "debtor_name": d_name,
@@ -375,7 +376,7 @@ else:
                     
                     interest = principal * (rate / 100)
                     total_due = principal + interest
-                    # บันทึกข้อมูลเพิ่มช่อง line_id เข้าไปด้วย
+                    # ลำดับคอลัมน์ชีต loans: user, debtor_name, line_id, buddhist_year, date_time, principal, interest, total_due, slip_url
                     append_to_sheet("loans", [current_user, debtor_name, line_id, buddhist_year, current_time_str, principal, interest, total_due, slip_url])
                     st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' และข้อมูล LINE ID สำเร็จ!")
                 else:
@@ -509,9 +510,7 @@ else:
                 user_loans = df_loans[df_loans["debtor_name"] == selected_debtor]
                 tot_p = user_loans["principal"].sum()
                 tot_i = user_loans["interest"].sum()
-                tot_due = user_loans["total_due"].sum()
                 
-                # ดึง LINE ID
                 u_line = "ไม่ได้ระบุ"
                 if "line_id" in user_loans.columns and not user_loans.empty:
                     val = user_loans.iloc[0].get("line_id", "")
@@ -545,7 +544,6 @@ else:
 
                 st.code(line_notice_text, language="text")
                 
-                # สร้างลิงก์ส่งไลน์แบบกดคลิกเปิดแอปแชทอัตโนมัติ
                 encoded_msg = urllib.parse.quote(line_notice_text)
                 line_url = f"https://line.me/R/msg/text/?{encoded_msg}"
                 
