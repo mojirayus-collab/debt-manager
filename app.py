@@ -13,7 +13,6 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 @st.cache_resource
 def init_google_sheet():
     try:
-        # ดึงค่าจากความลับที่ซ่อนไว้ใน Streamlit Cloud
         secret_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(secret_dict, scope)
         client = gspread.authorize(creds)
@@ -125,7 +124,7 @@ else:
 
             df_summary = pd.merge(summary_loans, summary_payments, on="debtor_name", how="left").fillna(0)
             df_summary["remaining"] = df_summary["total_due"] - df_summary["paid_amount"]
-            df_summary["status"] = df_summary["remaining"].apply(lambda x: "✅ ชำระครบแล้ว" if x <= 0 else "⚠️ ยังค้างชำระ")
+            df_summary["status"] = df_summary["remaining"].apply(lambda x: "✅ ชำระครบแล้ว" if x <= 0 else "⚠️️ ยังค้างชำระ")
             df_summary["remaining"] = df_summary["remaining"].apply(lambda x: max(0, x))
 
             st.subheader("📋 ตารางสรุปรายละเอียดรายบุคคล")
@@ -158,4 +157,105 @@ else:
 
                 with col_chart1:
                     st.markdown("##### 📌 สัดส่วนยอดหนี้สุทธิ (ต้น+ดอก) แต่ละคน")
-                    fig_due = px.pie(df_summary, names="debtor_name", values="total_due", hole=0.4, color_discrete_sequence=px.colors.
+                    fig_due = px.pie(
+                        df_summary, 
+                        names="debtor_name", 
+                        values="total_due", 
+                        hole=0.4, 
+                        color_discrete_sequence=px.colors.sequential.RdBu
+                    )
+                    st.plotly_chart(fig_due, use_container_width=True)
+
+                with col_chart2:
+                    st.markdown("##### 🚨 สัดส่วนยอดค้างชำระ")
+                    df_remaining_only = df_summary[df_summary["remaining"] > 0]
+                    if not df_remaining_only.empty:
+                        fig_rem = px.pie(
+                            df_remaining_only, 
+                            names="debtor_name", 
+                            values="remaining", 
+                            hole=0.4, 
+                            color_discrete_sequence=px.colors.sequential.Sunset
+                        )
+                        st.plotly_chart(fig_rem, use_container_width=True)
+                    else:
+                        st.success("🎉 ยอดค้างชำระเป็น 0 ทุกคน เคลียร์หนี้ครบหมดแล้ว!")
+
+    # เมนู 2: บันทึกยอดกู้ใหม่ (ซอยยอด)
+    elif menu == "➕ บันทึกยอดกู้ใหม่ (ซอยยอดได้)":
+        st.header("➕ บันทึกรายการยืมเงิน (สามารถบันทึกเพิ่มหลายรอบได้)")
+        with st.form("loan_form_sheet"):
+            buddhist_year = st.selectbox("ปี พ.ศ.", ["2569", "2570", "2571"])
+            month = st.selectbox("เดือน", ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"])
+            day_note = st.text_input("วันที่กู้ (เช่น วันที่ 1, หรือ 15 ต.ค.)", value="1")
+            debtor_name = st.text_input("ชื่อลูกหนี้")
+            principal = st.number_input("เงินต้นรอบนี้ (บาท)", min_value=0.0, step=100.0)
+            rate = st.number_input("ดอกเบี้ย (%)", value=20.0, step=1.0)
+            
+            submitted = st.form_submit_button("บันทึกข้อมูลเพิ่ม")
+            if submitted:
+                if debtor_name and principal > 0:
+                    interest = principal * (rate / 100)
+                    total_due = principal + interest
+                    append_to_sheet("loans", [current_user, debtor_name, buddhist_year, f"{day_note} {month} {buddhist_year}", principal, interest, total_due])
+                    st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' สำเร็จ!")
+                else:
+                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
+
+    # เมนู 3: แก้ไข/ลบรายการกู้
+    elif menu == "✏️ จัดการ/แก้ไข/ลบรายการกู้":
+        st.header("✏️ จัดการรายการยืมเงิน (ลบรายการที่ผิดพลาด)")
+        df_loans = get_data_from_sheet("loans")
+
+        if df_loans.empty:
+            st.info("ยังไม่มีข้อมูลรายการกู้ในระบบ")
+        else:
+            st.dataframe(df_loans, use_container_width=True)
+            st.markdown("---")
+            max_idx = max(0, len(df_loans) - 1)
+            row_to_delete = st.number_input("ระบุลำดับแถว (Index) ที่ต้องการลบ", min_value=0, max_value=max_idx, step=1)
+            
+            if st.button("❌ ลบรายการนี้ออกจากระบบ"):
+                sheet_row_index = int(row_to_delete) + 2
+                delete_row_from_sheet("loans", sheet_row_index)
+                st.success("ลบรายการเรียบร้อย! กรุณารีเฟรชหน้าจอ")
+                st.rerun()
+
+    # เมนู 4: บันทึกรับชำระเงิน
+    elif menu == "💵 บันทึกรับชำระเงิน":
+        st.header("💵 บันทึกรับชำระเงิน")
+        df_loans = get_data_from_sheet("loans")
+        debtors_list = df_loans["debtor_name"].unique().tolist() if not df_loans.empty else []
+
+        if not debtors_list:
+            st.warning("⚠️ ยังไม่มีรายชื่อลูกหนี้ในระบบ")
+        else:
+            with st.form("payment_form_sheet"):
+                buddhist_year = st.selectbox("ปี พ.ศ.", ["2569", "2570", "2571"])
+                debtor_name = st.selectbox("เลือกชื่อลูกหนี้", debtors_list)
+                month = st.text_input("งวดเดือนที่ชำระ")
+                paid_amount = st.number_input("จำนวนเงินที่จ่าย (บาท)", min_value=0.0, step=100.0)
+                
+                submitted = st.form_submit_button("บันทึกรับชำระ")
+                if submitted:
+                    if paid_amount > 0:
+                        append_to_sheet("payments", [current_user, debtor_name, buddhist_year, month, paid_amount])
+                        st.success(f"💵 บันทึกรับชำระจาก '{debtor_name}' เรียบร้อย!")
+                    else:
+                        st.error("⚠️ กรุณากรอกจำนวนเงินให้ถูกต้อง")
+
+    # เมนู 5: จัดการผู้ใช้งาน
+    elif menu == "👥 จัดการผู้ใช้งาน":
+        st.header("👥 เพิ่มบัญชีผู้ใช้งานใหม่")
+        with st.form("new_user_sheet"):
+            new_user = st.text_input("Username ใหม่")
+            new_pass = st.text_input("Password ใหม่", type="password")
+            create_sub = st.form_submit_button("สร้างบัญชี")
+            
+            if create_sub:
+                if new_user and new_pass:
+                    hashed = hashlib.sha256(new_pass.encode()).hexdigest()
+                    append_to_sheet("users", [new_user, hashed, "user"])
+                    st.success(f"✅ สร้างบัญชี '{new_user}' สำเร็จ!")
+                else:
+                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
