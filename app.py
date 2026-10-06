@@ -120,24 +120,24 @@ def upload_slip_to_drive(uploaded_file, folder_name="DebtSlips"):
 # ==========================================
 THEME_PALETTES = {
     "🔴 Crimson Red (แดงเพลิงโฉบเฉี่ยว)": {
-        "primary": "#ff4b4b", "primary_hover": "#ff6b6b", "glow": "rgba(255, 75, 75, 0.4)", "card_bg": "rgba(255, 255, 255, 0.05)", "border": "rgba(255, 75, 75, 0.3)"
+        "primary": "#ff4b4b", "primary_hover": "#ff6b6b", "glow": "rgba(255, 75, 75, 0.5)", "card_bg": "rgba(25, 28, 36, 0.65)", "border": "rgba(255, 75, 75, 0.4)"
     },
     "⚡ Cyber Blue (ฟ้าไซเบอร์ล้ำอนาคต)": {
-        "primary": "#00d2ff", "primary_hover": "#3addff", "glow": "rgba(0, 210, 255, 0.4)", "card_bg": "rgba(0, 210, 255, 0.05)", "border": "rgba(0, 210, 255, 0.3)"
+        "primary": "#00d2ff", "primary_hover": "#3addff", "glow": "rgba(0, 210, 255, 0.5)", "card_bg": "rgba(25, 28, 36, 0.65)", "border": "rgba(0, 210, 255, 0.4)"
     },
     "🟢 Neon Emerald (เขียวมรกตเรืองแสง)": {
-        "primary": "#00ff87", "primary_hover": "#33ff9f", "glow": "rgba(0, 255, 135, 0.4)", "card_bg": "rgba(0, 255, 135, 0.05)", "border": "rgba(0, 255, 135, 0.3)"
+        "primary": "#00ff87", "primary_hover": "#33ff9f", "glow": "rgba(0, 255, 135, 0.5)", "card_bg": "rgba(25, 28, 36, 0.65)", "border": "rgba(0, 255, 135, 0.4)"
     },
     "🟣 Royal Purple (ม่วงพรีเมียมหรูหรา)": {
-        "primary": "#9d4edd", "primary_hover": "#b565ff", "glow": "rgba(157, 78, 221, 0.4)", "card_bg": "rgba(157, 78, 221, 0.05)", "border": "rgba(157, 78, 221, 0.3)"
+        "primary": "#9d4edd", "primary_hover": "#b565ff", "glow": "rgba(157, 78, 221, 0.5)", "card_bg": "rgba(25, 28, 36, 0.65)", "border": "rgba(157, 78, 221, 0.4)"
     },
     "🟡 Golden Amber (เหลืองทองคำเด่นชัด)": {
-        "primary": "#ffb703", "primary_hover": "#ffd166", "glow": "rgba(255, 183, 3, 0.4)", "card_bg": "rgba(255, 183, 3, 0.05)", "border": "rgba(255, 183, 3, 0.3)"
+        "primary": "#ffb703", "primary_hover": "#ffd166", "glow": "rgba(255, 183, 3, 0.5)", "card_bg": "rgba(25, 28, 36, 0.65)", "border": "rgba(255, 183, 3, 0.4)"
     }
 }
 
 # ==========================================
-# 3. ระบบ Login & UI Setup
+# 3. ระบบ Login & UI Setup พร้อม Ultimate CSS Animations
 # ==========================================
 st.set_page_config(page_title="ระบบจัดการลูกหนี้ Ultimate Pro", page_icon="⚡", layout="wide")
 
@@ -155,27 +155,96 @@ def apply_custom_css(setting):
     t = THEME_PALETTES[theme_key]
     bg_image = setting.get("bg_image", "")
     
-    bg_style = "background-color: #0e1117;"
+    bg_style = "background-color: #0b0f19;"
     if bg_image.strip() != "":
-        bg_style = f"background-image: linear-gradient(rgba(14,17,23,0.85), rgba(14,17,23,0.85)), url('{bg_image}'); background-size: cover; background-position: center; background-attachment: fixed;"
+        bg_style = f"background-image: linear-gradient(rgba(11,15,25,0.88), rgba(11,15,25,0.88)), url('{bg_image}'); background-size: cover; background-position: center; background-attachment: fixed;"
 
     custom_css = f"""
     <style>
-        .stApp {{ {bg_style} }}
+        /* Animation keyframes สำหรับความเคลื่อนไหว */
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        @keyframes pulseGlow {{
+            0% {{ box-shadow: 0 0 0 0 {t['glow']}; }}
+            70% {{ box-shadow: 0 0 0 12px rgba(0,0,0,0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(0,0,0,0); }}
+        }}
+
+        .stApp {{
+            {bg_style}
+            animation: fadeIn 0.6s ease-out;
+        }
+
+        /* แต่งเอฟเฟกต์ปุ่มกด (Buttons) ให้ขยับได้ มีเงานีออน */
         div.stButton > button {{
-            background-color: {t['primary']} !important; color: #ffffff !important; border: none !important;
-            transition: all 0.25s ease-in-out !important; border-radius: 12px !important; font-weight: bold !important; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            background: linear-gradient(135deg, {t['primary']} 0%, {t['primary_hover']} 100%) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 14px !important;
+            font-weight: 700 !important;
+            padding: 0.6rem 1.2rem !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            position: relative;
+            overflow: hidden;
         }}
         div.stButton > button:hover {{
-            background-color: {t['primary_hover']} !important; transform: translateY(-3px) scale(1.02) !important; box-shadow: 0 8px 20px {t['glow']} !important;
+            transform: translateY(-4px) scale(1.03) !important;
+            box-shadow: 0 8px 25px {t['glow']} !important;
+            animation: pulseGlow 1.5s infinite;
         }}
-        div.stButton > button:active {{ transform: translateY(1px) scale(0.97) !important; }}
-        .stTextInput input, .stNumberInput input, .stSelectbox select {{ border-radius: 10px !important; }}
+        div.stButton > button:active {{
+            transform: translateY(1px) scale(0.97) !important;
+        }}
+
+        /* แต่งกล่อง Input / Select ให้โค้งมนและเรืองแสงเวลาคลิก */
+        .stTextInput input, .stNumberInput input, .stSelectbox select {{
+            background-color: rgba(255, 255, 255, 0.04) !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
+            border-radius: 12px !important;
+            color: #ffffff !important;
+            transition: all 0.3s ease !important;
+        }}
+        .stTextInput input:focus, .stNumberInput input:focus, .stSelectbox select:focus {{
+            border-color: {t['primary']} !important;
+            box-shadow: 0 0 12px {t['glow']} !important;
+        }}
+
+        /* แต่ง Metric Cards สไตล์ Glassmorphism ขยับลอยได้เมื่อเอาเมาส์ชี้ */
         [data-testid="stMetric"] {{
-            background: {t['card_bg']}; backdrop-filter: blur(12px); padding: 15px; border-radius: 15px; border: 1px solid {t['border']};
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); transition: transform 0.3s ease;
+            background: {t['card_bg']};
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 20px;
+            border-radius: 20px;
+            border: 1px solid {t['border']};
+            box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.4);
+            transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+            animation: fadeIn 0.5s ease-out;
         }}
-        [data-testid="stMetric"]:hover {{ transform: translateY(-5px); border-color: {t['primary']}; }}
+        [data-testid="stMetric"]:hover {{
+            transform: translateY(-8px) scale(1.02);
+            border-color: {t['primary']};
+            box-shadow: 0 15px 35px {t['glow']};
+        }}
+
+        /* แต่งตาราง DataFrame ให้ดูพรีเมียม ขอบมน */
+        [data-testid="stDataFrame"] {{
+            border-radius: 15px;
+            overflow: hidden;
+            box-style: border-box;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }}
+
+        /* แต่งกล่อง Sidebar เมนู */
+        [data-testid="stSidebar"] {{
+            background-color: rgba(11, 15, 25, 0.95);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }}
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
@@ -596,6 +665,8 @@ else:
     elif menu == "👥 จัดการผู้ใช้งาน":
         st.header("👥 เพิ่มบัญชีผู้ใช้งานระบบใหม่")
         df_users = get_data_from_sheet("users")
+        if not df_users.print if not df_users.empty else True:
+            pass
         if not df_users.empty:
             st.subheader("รายชื่อผู้ใช้งานปัจจุบันในระบบ")
             st.dataframe(df_users[["username", "role"]], use_container_width=True)
