@@ -4,7 +4,7 @@ import hashlib
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, date
 import pytz
 import os
 import urllib.parse
@@ -234,12 +234,36 @@ else:
         "👥 จัดการผู้ใช้งาน"
     ])
 
-    # เมนู 1: หน้าสรุปภาพรวมพร้อม Credit Scoring (เกรดความเสี่ยง)
+    # เมนู 1: หน้าสรุปภาพรวมพร้อม Smart Alert Banner (แจ้งเตือน < 3 วัน)
     if menu == "📊 หน้าสรุปภาพรวม & กราฟสัดส่วน":
         st.header(f"📊 สรุปยอดลูกหนี้ & ระบบประเมินความเสี่ยง (Credit Scoring) - ({current_user})")
         
         df_loans = get_data_from_sheet("loans")
         df_payments = get_data_from_sheet("payments")
+
+        # ระบบ Smart Alert ตรวจสอบกำหนดชำระเหลือน้อยกว่าหรือเท่ากับ 3 วัน
+        if not df_loans.empty and "date_time" in df_loans.columns:
+            today_date = datetime.now(TH_TIMEZONE).date()
+            urgent_alerts = []
+            
+            for idx, row in df_loans.iterrows():
+                try:
+                    loan_dt = pd.to_datetime(row["date_time"]).tz_localize(TH_TIMEZONE).date() if pd.to_datetime(row["date_time"]).tz is None else pd.to_datetime(row["date_time"]).astimezone(TH_TIMEZONE).date()
+                    # สมมติรอบกำหนดชำระคือ 30 นับจากวันที่กู้ (หรือสามารถปรับเปลี่ยนเงื่อนไขวันครบกำหนดตามต้องการ)
+                    # ที่นี่เราเช็คจากวันที่บันทึกย้อนหลังหรือกำหนดการ
+                    days_passed = (today_date - loan_dt).days
+                    # สมมติรอบบิล 30 วัน ใกล้ครบกำหนด (เหลือ <= 3 วันก่อนครบ 30 วัน หรือเกินกำหนด)
+                    days_left = 30 - (days_passed % 30)
+                    
+                    if 0 <= days_left <= 3:
+                        urgent_alerts.append(f"🚨 **แจ้งเตือนด่วน!** ลูกหนี้ **{row['debtor_name']}** จะครบกำหนดชำระในอีก **{days_left} วัน** (ยอดกู้: {row['total_due']:,.2f} ฿)")
+                except Exception:
+                    pass
+            
+            if urgent_alerts:
+                st.warning("### ⚠️ ประกาศเตือนกำหนดชำระใกล้ถึงกำหนด (<= 3 วัน)")
+                for alert_msg in set(urgent_alerts):
+                    st.error(alert_msg)
 
         if df_loans.empty:
             st.info("💡 ยังไม่มีข้อมูลในระบบ เริ่มบันทึกยอดกู้ได้ที่เมนูด้านข้างครับ")
@@ -268,7 +292,6 @@ else:
                         total_paid_by_debtor = p_rows["paid_amount"].sum()
                         payment_count = len(p_rows)
 
-                # Waterfall Logic: ตัดดอกเบี้ยก่อน
                 paid_to_interest = min(init_i, total_paid_by_debtor)
                 remainder_after_interest = max(0, total_paid_by_debtor - init_i)
                 paid_to_principal = min(init_p, remainder_after_interest)
@@ -277,7 +300,6 @@ else:
                 remaining_principal = init_p - paid_to_principal
                 remaining_total = remaining_interest + remaining_principal
 
-                # Credit Scoring & Risk Rating Logic
                 if remaining_total <= 0:
                     risk_grade = "🟢 เกรด A (ชำระครบถ้วน ไร้ความเสี่ยง)"
                 elif payment_count > 0:
@@ -285,7 +307,6 @@ else:
                 else:
                     risk_grade = "🔴 เกรด C (ยังไม่มีประวัติการชำระ/เสี่ยงสูง)"
 
-                # ดึง LINE ID ถ้ามีบันทึกไว้
                 u_line = "ไม่มีข้อมูล"
                 if "line_id" in df_loans.columns:
                     l_rows = df_loans[df_loans["debtor_name"] == d_name]
@@ -376,11 +397,10 @@ else:
                     
                     interest = principal * (rate / 100)
                     total_due = principal + interest
-                    # ลำดับคอลัมน์ชีต loans: user, debtor_name, line_id, buddhist_year, date_time, principal, interest, total_due, slip_url
                     append_to_sheet("loans", [current_user, debtor_name, line_id, buddhist_year, current_time_str, principal, interest, total_due, slip_url])
                     st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' และข้อมูล LINE ID สำเร็จ!")
                 else:
-                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
+                    st.error("⚠️️ กรุณากรอกข้อมูลให้ครบถ้วน")
 
     # เมนู 4: แก้ไข/ลบรายการกู้
     elif menu == "✏️ จัดการ/แก้ไข/ลบรายการกู้":
@@ -492,7 +512,7 @@ else:
                 st.success("🗑️ ลบประวัติสำเร็จ!")
                 st.rerun()
 
-    # เมนูใหม่: 💬 สร้างข้อความแจ้งเตือน LINE (Line Notice Optional)
+    # เมนู: 💬 สร้างข้อความแจ้งเตือน LINE (Line Notice)
     elif menu == "💬 สร้างข้อความแจ้งเตือน LINE (Line Notice)":
         st.header("💬 สร้างข้อความสรุปยอดส่งหาลูกหนี้ทาง LINE (Line Notice)")
         st.markdown("เลือกชื่อลูกหนี้ที่คุณต้องการส่งยอดแจ้งเตือน ระบบจะสร้างข้อความรายละเอียดที่ครบถ้วนที่สุดให้อัตโนมัติทันที!")
