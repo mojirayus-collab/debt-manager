@@ -4,7 +4,7 @@ import hashlib
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import plotly.express as px
-from datetime import datetime, date
+from datetime import datetime
 import pytz
 import os
 import urllib.parse
@@ -249,10 +249,7 @@ else:
             for idx, row in df_loans.iterrows():
                 try:
                     loan_dt = pd.to_datetime(row["date_time"]).tz_localize(TH_TIMEZONE).date() if pd.to_datetime(row["date_time"]).tz is None else pd.to_datetime(row["date_time"]).astimezone(TH_TIMEZONE).date()
-                    # สมมติรอบกำหนดชำระคือ 30 นับจากวันที่กู้ (หรือสามารถปรับเปลี่ยนเงื่อนไขวันครบกำหนดตามต้องการ)
-                    # ที่นี่เราเช็คจากวันที่บันทึกย้อนหลังหรือกำหนดการ
                     days_passed = (today_date - loan_dt).days
-                    # สมมติรอบบิล 30 วัน ใกล้ครบกำหนด (เหลือ <= 3 วันก่อนครบ 30 วัน หรือเกินกำหนด)
                     days_left = 30 - (days_passed % 30)
                     
                     if 0 <= days_left <= 3:
@@ -400,7 +397,7 @@ else:
                     append_to_sheet("loans", [current_user, debtor_name, line_id, buddhist_year, current_time_str, principal, interest, total_due, slip_url])
                     st.success(f"✅ บันทึกยอดกู้ของ '{debtor_name}' และข้อมูล LINE ID สำเร็จ!")
                 else:
-                    st.error("⚠️️ กรุณากรอกข้อมูลให้ครบถ้วน")
+                    st.error("⚠️ กรุณากรอกข้อมูลให้ครบถ้วน")
 
     # เมนู 4: แก้ไข/ลบรายการกู้
     elif menu == "✏️ จัดการ/แก้ไข/ลบรายการกู้":
