@@ -4,6 +4,7 @@ import hashlib, io, html, calendar, urllib.parse
 import gspread, pytz
 from oauth2client.service_account import ServiceAccountCredentials
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, date, time, timedelta
 
 # ==========================================
@@ -16,7 +17,7 @@ DEFAULT_THEME = "🔴 Crimson Red (แดงเพลิงโฉบเฉี่
 MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
           "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 LOAN_COLS = ["username", "debtor_name", "line_id", "buddhist_year", "date_time",
-             "principal", "interest", "total_due", "slip_url"]
+             "principal", "interest", "total_due", "slip_url", "note"]
 PAY_COLS = ["username", "debtor_name", "buddhist_year", "date_time", "paid_amount", "slip_url"]
 
 def now_th():
@@ -36,12 +37,19 @@ def init_google():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), SCOPE)
         book = gspread.authorize(creds).open("DebtDatabase")
         heads = {"users": ["username", "password", "role"], "loans": LOAN_COLS, "payments": PAY_COLS,
-                 "settings": ["username", "theme_name", "welcome_msg", "bg_image"]}
+                 "settings": ["username", "theme_name", "welcome_msg", "bg_image"],
+                 "audit_log": ["time", "user", "action", "detail"]}
         have = [w.title for w in book.worksheets()]
         for name, cols in heads.items():
             if name not in have:
-                ws = book.add_worksheet(title=name, rows=1000, cols=len(cols))
+                ws = book.add_worksheet(title=name, rows=1000, cols=12)
                 ws.append_row(cols)
+        wl = book.worksheet("loans")
+        hd = wl.row_values(1)
+        if "note" not in hd:
+            if wl.col_count < len(hd) + 1:
+                wl.add_cols(1)
+            wl.update_cell(1, len(hd) + 1, "note")
         return book, creds
     except Exception as e:
         st.error(f"⚠️ เชื่อมต่อ Google Sheets ไม่ได้: {e}")
@@ -59,6 +67,8 @@ def load(name):
         return pd.DataFrame()
     if df.empty:
         return df
+    if name in ("loans", "payments"):
+        df = df.rename(columns={df.columns[0]: "owner"})  # คอลัมน์แรก = เจ้าของข้อมูลเสมอ
     df["_row"] = df.index + 2  # เลขแถวจริงใน Sheet
     for c in ("principal", "interest", "total_due", "paid_amount"):
         if c in df.columns:
@@ -67,19 +77,34 @@ def load(name):
         df["dt"] = pd.to_datetime(df["date_time"], errors="coerce")
     return df
 
+def log(action, detail=""):
+    try:
+        sh.worksheet("audit_log").append_row([now_th().strftime(FMT), st.session_state.get("username", ""), action, detail],
+                                             value_input_option="RAW")
+    except Exception:
+        pass
+
 def add_row(name, row):
     sh.worksheet(name).append_row(row, value_input_option="RAW")
     load.clear()
+    if name == "users":
+        log("เพิ่มผู้ใช้", str(row[0]))
+    elif name == "loans":
+        log("เพิ่มรายการกู้", f"{row[1]} {row[5]:,.2f}")
+    elif name == "payments":
+        log("รับชำระ", f"{row[1]} {row[4]:,.2f}")
 
 def delete_row(name, row):
     sh.worksheet(name).delete_rows(int(row))
     load.clear()
+    log(f"ลบข้อมูล {name}", f"แถว {int(row)}")
 
 def update_cells(name, row, changes):
     ws = sh.worksheet(name)
     for col, val in changes.items():
         ws.update_cell(int(row), col, val)
     load.clear()
+    log(f"แก้ไขข้อมูล {name}", f"แถว {int(row)}")
 
 def get_setting(user):
     df = load("settings")
@@ -100,7 +125,7 @@ def save_setting(user, theme, welcome, bg):
         ws.append_row([user, theme, welcome, bg], value_input_option="RAW")
     load.clear()
 
-def upload_slip(f, folder="DebtSlips"):
+def upload_slip(f, folder="DebtSlips", direct=False):
     if f is None or creds is None:
         return ""
     try:
@@ -118,7 +143,7 @@ def upload_slip(f, folder="DebtSlips"):
         media = MediaIoBaseUpload(io.BytesIO(f.getvalue()), mimetype=f.type, resumable=True)
         up = svc.files().create(body=meta, media_body=media, fields="id, webViewLink").execute()
         svc.permissions().create(fileId=up["id"], body={"role": "reader", "type": "anyone"}).execute()
-        return up.get("webViewLink", "")
+        return f"https://lh3.googleusercontent.com/d/{up['id']}" if direct else up.get("webViewLink", "")
     except Exception as e:
         st.warning(f"อัปโหลดสลิปไม่สำเร็จ ระบบจะบันทึกรายการโดยไม่มีสลิป ({e})")
         return ""
@@ -135,36 +160,61 @@ THEMES = {
     "🟢 Neon Emerald (เขียวมรกตเรืองแสง)": _t("#00ff87", "#5affb0", "0,255,135"),
     "🟣 Royal Purple (ม่วงพรีเมียมหรูหรา)": _t("#9d4edd", "#b565ff", "157,78,221"),
     "🟡 Golden Amber (เหลืองทองคำเด่นชัด)": _t("#ffb703", "#ffd166", "255,183,3"),
+    "🌊 Ocean Teal (เขียวน้ำทะเลสงบ)": _t("#14b8a6", "#5eead4", "20,184,166"),
+    "🍊 Sunset Orange (ส้มพระอาทิตย์ตก)": _t("#fb7a24", "#ffa05c", "251,122,36"),
+    "🌸 Rose Quartz (ชมพูโรสควอตซ์)": _t("#f472b6", "#f9a8d4", "244,114,182"),
 }
 
 def apply_css(setting):
     t = THEMES.get(setting.get("theme_name"), THEMES[DEFAULT_THEME])
     bg = str(setting.get("bg_image", "") or "").strip()
-    bg_css = "background:#0b0f19;"
+    bg_css = "background:radial-gradient(1200px 600px at 10% -10%,var(--glow),transparent 60%),#0b0f19;"
     if bg:
-        bg_css = (f"background-image:linear-gradient(rgba(11,15,25,.9),rgba(11,15,25,.9)),url('{bg}');"
+        bg_css = (f"background-image:linear-gradient(rgba(11,15,25,.88),rgba(11,15,25,.92)),url('{bg}');"
                   "background-size:cover;background-position:center;background-attachment:fixed;")
     st.markdown(f"""<style>
 @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&display=swap');
 :root{{--p:{t['primary']};--ph:{t['hover']};--glow:{t['glow']};--bd:{t['border']};}}
 .stApp{{{bg_css}}}
 .stApp,.stMarkdown,button,input,label,p,h1,h2,h3,h4,textarea{{font-family:'Prompt',sans-serif;}}
-.block-container{{padding-top:2rem;max-width:1250px;}}
-div.stButton>button,div.stDownloadButton>button,div.stFormSubmitButton>button{{
+.block-container{{padding-top:1.6rem;max-width:1280px;}}
+header[data-testid="stHeader"]{{background:transparent;}}
+div.stButton>button,div.stDownloadButton>button,div.stFormSubmitButton>button,div.stLinkButton>a{{
   background:linear-gradient(135deg,var(--p),var(--ph))!important;color:#fff!important;border:none!important;
   border-radius:12px!important;font-weight:600!important;padding:.55rem 1.1rem!important;transition:.2s;}}
 div.stButton>button:hover,div.stFormSubmitButton>button:hover{{box-shadow:0 6px 20px var(--glow)!important;transform:translateY(-2px);}}
-.stTextInput input,.stNumberInput input,.stDateInput input,.stTimeInput input{{
+div.stButton>button:disabled{{opacity:.4;}}
+.stTextInput input,.stNumberInput input,.stDateInput input,.stTimeInput input,.stTextArea textarea{{
   background:rgba(255,255,255,.05)!important;border:1px solid rgba(255,255,255,.14)!important;border-radius:10px!important;}}
+[data-baseweb="select"]>div{{background:rgba(255,255,255,.05)!important;border-radius:10px!important;border-color:rgba(255,255,255,.14)!important;}}
 .stTextInput input:focus,.stNumberInput input:focus{{border-color:var(--p)!important;box-shadow:0 0 10px var(--glow)!important;}}
-[data-testid="stMetric"]{{background:rgba(25,28,36,.7);backdrop-filter:blur(14px);padding:18px 20px;
+.stTabs [data-baseweb="tab-list"]{{gap:6px;}}
+.stTabs [data-baseweb="tab"]{{border-radius:10px;padding:8px 16px;background:rgba(255,255,255,.04);}}
+.stTabs [aria-selected="true"]{{background:var(--glow)!important;}}
+.stTabs [data-baseweb="tab-highlight"],.stTabs [data-baseweb="tab-border"]{{display:none;}}
+[data-testid="stMetric"]{{background:rgba(25,28,36,.7);backdrop-filter:blur(14px);padding:16px 18px;
   border-radius:16px;border:1px solid var(--bd);border-left:5px solid var(--p);}}
-[data-testid="stMetricLabel"]{{opacity:.8;}}
 [data-testid="stDataFrame"]{{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.1);}}
-[data-testid="stSidebar"]{{background:rgba(11,15,25,.96);border-right:1px solid rgba(255,255,255,.08);}}
-.hero{{padding:22px 26px;border-radius:18px;margin-bottom:18px;border:1px solid var(--bd);
-  background:linear-gradient(120deg,var(--glow),rgba(25,28,36,.7) 55%);}}
+[data-testid="stExpander"]{{border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);}}
+[data-testid="stSidebar"]{{background:rgba(11,15,25,.94);backdrop-filter:blur(12px);border-right:1px solid rgba(255,255,255,.08);}}
+[data-testid="stSidebar"] div[role="radiogroup"]{{gap:3px;}}
+[data-testid="stSidebar"] div[role="radiogroup"] label{{padding:9px 12px;border-radius:12px;width:100%;transition:.15s;}}
+[data-testid="stSidebar"] div[role="radiogroup"] label:hover{{background:rgba(255,255,255,.06);}}
+[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked){{
+  background:linear-gradient(90deg,var(--glow),transparent);border-left:3px solid var(--p);font-weight:600;}}
+.brand{{display:flex;align-items:center;gap:12px;margin-bottom:14px;}}
+.brand span{{font-size:1.6rem;width:46px;height:46px;display:grid;place-items:center;border-radius:14px;
+  background:linear-gradient(135deg,var(--p),var(--ph));}}
+.brand b{{font-size:1.15rem;display:block;line-height:1.1;}} .brand small,.ucard small{{opacity:.65;}}
+.ucard{{padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);margin-bottom:12px;}}
+.hero{{padding:22px 26px;border-radius:20px;margin-bottom:18px;border:1px solid var(--bd);
+  background:linear-gradient(120deg,var(--glow),rgba(25,28,36,.72) 60%);}}
 .hero h2{{margin:0;font-weight:700;}} .hero p{{margin:.3rem 0 0;opacity:.8;}}
+.kpi{{position:relative;padding:18px 20px;border-radius:18px;background:rgba(25,28,36,.72);backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,.08);overflow:hidden;}}
+.kpi:before{{content:'';position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,var(--p),transparent);}}
+.kpi .ki{{font-size:1.3rem;}} .kpi .kl{{opacity:.7;font-size:.85rem;}}
+.kpi .kv{{font-size:1.5rem;font-weight:700;margin:2px 0;}} .kpi .ks{{opacity:.6;font-size:.78rem;}}
 .chip{{display:inline-block;padding:3px 12px;border-radius:999px;font-size:.82rem;font-weight:600;margin-right:6px;}}
 .chip.ok{{background:rgba(0,200,120,.18);color:#4ade80;}} .chip.warn{{background:rgba(255,183,3,.18);color:#fbbf24;}}
 .chip.bad{{background:rgba(255,75,75,.18);color:#ff8080;}}
@@ -179,6 +229,13 @@ table.cal td.today{{border:2px solid var(--p);box-shadow:0 0 12px var(--glow);}}
 .ev{{margin-top:3px;padding:1px 6px;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
 .ev.loan{{background:rgba(80,140,255,.25);}} .ev.pay{{background:rgba(0,200,120,.25);}} .ev.due{{background:rgba(255,75,75,.28);}}
 </style>""", unsafe_allow_html=True)
+
+def kpi(col, icon, label, value, sub=""):
+    col.markdown(f"<div class='kpi'><div class='ki'>{icon}</div><div class='kl'>{label}</div>"
+                 f"<div class='kv'>{value}</div><div class='ks'>{sub}&nbsp;</div></div>", unsafe_allow_html=True)
+
+def goto(p):
+    st.session_state["nav"] = p
 
 # ==========================================
 # 3. ตัวช่วยคำนวณ
@@ -279,6 +336,7 @@ def login_screen():
                     st.error("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง ลองตรวจตัวพิมพ์เล็ก-ใหญ่อีกครั้ง")
                 else:
                     ss.update(logged_in=True, username=u, role=str(m.iloc[0].get("role", "user")))
+                    log("เข้าสู่ระบบ")
                     st.rerun()
 
 if not ss["logged_in"]:
@@ -291,21 +349,25 @@ if not ss["logged_in"]:
 is_admin = ss["role"] == "admin"
 
 def scoped(df):
-    if df.empty or is_admin or "username" not in df.columns:
+    if df.empty:
         return df
-    return df[df["username"].astype(str) == user]
+    if "owner" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["owner"].astype(str).str.strip() == str(user).strip()]
 
 loans_all, pays_all = scoped(load("loans")), scoped(load("payments"))
 
 PAGES = ["🏠 แดชบอร์ด", "📅 ปฏิทิน", "➕ ปล่อยกู้ใหม่", "💵 รับชำระ & ใบเสร็จ", "👤 ข้อมูลลูกหนี้รายคน",
          "✏️ แก้ไข/ลบรายการ", "💬 แจ้งเตือน LINE", "⚙️ ตั้งค่า"]
 if is_admin:
-    PAGES.append("👥 จัดการผู้ใช้")
+    PAGES += ["👥 จัดการผู้ใช้", "🧾 บันทึกการใช้งาน"]
 
 with st.sidebar:
-    st.markdown(f"### 👤 {user}")
-    st.caption(f"{'ผู้ดูแลระบบ' if is_admin else 'ผู้ใช้งาน'} · {setting.get('welcome_msg', '')}")
-    page = st.radio("เมนู", PAGES, label_visibility="collapsed")
+    st.markdown("<div class='brand'><span>⚡</span><div><b>DebtPro</b><small>ระบบจัดการลูกหนี้</small></div></div>",
+                unsafe_allow_html=True)
+    st.markdown(f"<div class='ucard'>👤 <b>{html.escape(user)}</b><br><small>{'ผู้ดูแลระบบ' if is_admin else 'ผู้ใช้งาน'}"
+                f" · {html.escape(str(setting.get('welcome_msg', '')))}</small></div>", unsafe_allow_html=True)
+    page = st.radio("เมนู", PAGES, key="nav", label_visibility="collapsed")
     st.divider()
     if st.button("🚪 ออกจากระบบ", use_container_width=True):
         ss.update(logged_in=False, username="", role="user")
@@ -323,7 +385,7 @@ def need_data():
 
 # ---------- แดชบอร์ด ----------
 if page == PAGES[0]:
-    hero("🏠 ภาพรวมลูกหนี้", f"ข้อมูล ณ {now_th().strftime('%d/%m/')}{now_th().year + 543}")
+    hero("🏠 ภาพรวมลูกหนี้", f"{setting.get('welcome_msg', '')} · ข้อมูล ณ {now_th().strftime('%d/%m/')}{now_th().year + 543}")
     need_data()
     loans, pays, summ = loans_all, pays_all, summary
     years = sorted((loans["dt"].dt.year + 543).dropna().astype(int).astype(str).unique())
@@ -338,26 +400,43 @@ if page == PAGES[0]:
         st.stop()
 
     c = st.columns(4)
-    c[0].metric("เงินต้นรวม", baht(summ["เงินต้น"].sum()))
-    c[1].metric("ดอกเบี้ยรวม", baht(summ["ดอกเบี้ย"].sum()))
-    c[2].metric("รับชำระแล้ว", baht(summ["จ่ายแล้ว"].sum()))
-    c[3].metric("ยอดค้างสุทธิ", baht(summ["คงเหลือ"].sum()))
+    kpi(c[0], "📌", "เงินต้นรวม", baht(summ["เงินต้น"].sum()), f"{len(summ)} ลูกหนี้")
+    kpi(c[1], "📈", "ดอกเบี้ยรวม", baht(summ["ดอกเบี้ย"].sum()))
+    kpi(c[2], "💵", "รับชำระแล้ว", baht(summ["จ่ายแล้ว"].sum()))
+    kpi(c[3], "🚨", "ยอดค้างสุทธิ", baht(summ["คงเหลือ"].sum()), f"ค้าง {int((summ['คงเหลือ'] > 0).sum())} ราย")
+    st.write("")
+    q = st.columns(3)
+    q[0].button("➕ ปล่อยกู้ใหม่", on_click=goto, args=(PAGES[2],), use_container_width=True)
+    q[1].button("💵 รับชำระ", on_click=goto, args=(PAGES[3],), use_container_width=True)
+    q[2].button("💬 ส่งแจ้งเตือน LINE", on_click=goto, args=(PAGES[6],), use_container_width=True)
 
     soon = summ[(summ["คงเหลือ"] > 0) & (summ["เหลือ(วัน)"].notna()) & (summ["เหลือ(วัน)"] <= 3)]
+    st.write("")
     for _, r in soon.sort_values("เหลือ(วัน)").iterrows():
         d = int(r["เหลือ(วัน)"])
         when = "ครบกำหนดวันนี้" if d == 0 else f"อีก {d} วัน"
         st.markdown(f"<div class='alert soon'>⏰ <b>{html.escape(str(r['ลูกหนี้']))}</b> {when} · ค้าง {baht(r['คงเหลือ'])}</div>",
                     unsafe_allow_html=True)
 
-    g1, g2 = st.columns(2)
+    tot = summ["ยอดรวม"].sum()
+    pct = summ["จ่ายแล้ว"].sum() / tot * 100 if tot else 0
+    accent = THEMES.get(setting.get("theme_name"), THEMES[DEFAULT_THEME])["primary"]
+    gauge = go.Figure(go.Indicator(mode="gauge+number", value=pct, number={"suffix": "%"}, title={"text": "อัตราเก็บหนี้"},
+                                   gauge={"axis": {"range": [0, 100]}, "bar": {"color": accent}}))
     donut = pd.DataFrame({"ส่วน": ["เงินต้นค้าง", "ดอกเบี้ยค้าง", "รับชำระแล้ว"],
                           "บาท": [summ["ต้นค้าง"].sum(), summ["ดอกค้าง"].sum(), summ["จ่ายแล้ว"].sum()]})
-    g1.plotly_chart(chart_style(px.pie(donut, names="ส่วน", values="บาท", hole=.55, title="สัดส่วนยอดหนี้")),
-                    use_container_width=True)
+    owing = summ[summ["คงเหลือ"] > 0].set_index("ลูกหนี้")["คงเหลือ"]
+    ages = (now_th() - loans.groupby("debtor_name")["dt"].max().reindex(owing.index)).dt.days
+    bucket = pd.cut(ages, [-1, 30, 60, 90, 10**6], labels=["0-30 วัน", "31-60 วัน", "61-90 วัน", "90+ วัน"])
+    aging = owing.groupby(bucket, observed=False).sum().reset_index()
+    aging.columns = ["อายุหนี้", "บาท"]
+    g1, g2, g3 = st.columns(3)
+    g1.plotly_chart(chart_style(gauge), use_container_width=True)
+    g2.plotly_chart(chart_style(px.pie(donut, names="ส่วน", values="บาท", hole=.55, title="สัดส่วนยอดหนี้")), use_container_width=True)
+    g3.plotly_chart(chart_style(px.bar(aging, x="อายุหนี้", y="บาท", title="อายุหนี้ค้าง (นับจากวันกู้ล่าสุด)")), use_container_width=True)
     top = summ[summ["คงเหลือ"] > 0].sort_values("คงเหลือ", ascending=False).head(10)
     if not top.empty:
-        g2.plotly_chart(chart_style(px.bar(top, x="คงเหลือ", y="ลูกหนี้", orientation="h", title="ลูกหนี้ค้างสูงสุด")),
+        st.plotly_chart(chart_style(px.bar(top, x="คงเหลือ", y="ลูกหนี้", orientation="h", title="ลูกหนี้ค้างสูงสุด")),
                         use_container_width=True)
     m1 = loans.assign(เดือน=loans["dt"].dt.to_period("M").astype(str)).groupby("เดือน")["principal"].sum().rename("ปล่อยกู้")
     if not pays.empty:
@@ -453,6 +532,7 @@ elif page == PAGES[2]:
     interest = principal * rate / 100
     st.info(f"ดอกเบี้ย {baht(interest)} · ยอดที่ต้องคืน **{baht(principal + interest)}**")
     when = datetime_picker("loan")
+    note = st.text_input("📝 หมายเหตุ (ไม่บังคับ)", placeholder="เช่น ค้ำโดยใคร, นัดจ่ายวันไหน")
     slip = st.file_uploader("📎 แนบสลิปการโอนเงินให้ยืม", type=["png", "jpg", "jpeg"])
     if st.button("💾 บันทึกรายการกู้", use_container_width=True):
         if not name.strip() or principal <= 0:
@@ -461,7 +541,7 @@ elif page == PAGES[2]:
             with st.spinner("กำลังบันทึก..."):
                 url = upload_slip(slip) if slip else ""
                 add_row("loans", [user, name.strip(), line_id.strip(), str(when.year + 543), when.strftime(FMT),
-                                  principal, interest, principal + interest, url])
+                                  principal, interest, principal + interest, url, note.strip()])
             st.success(f"บันทึกยอดกู้ของ '{name}' แล้ว")
 
 # ---------- รับชำระ ----------
@@ -578,11 +658,12 @@ elif page == PAGES[5]:
         old_rate = float(r["interest"] / r["principal"] * 100) if r["principal"] else 20.0
         nr = c4.number_input("ดอกเบี้ย (%)", value=old_rate, step=1.0, key="e_r")
         nd = datetime_picker("eloan", default=r["dt"] if pd.notna(r["dt"]) else now_th())
+        nnote = st.text_input("📝 หมายเหตุ", str(r.get("note", "") or ""), key="e_note")
         b1, b2 = st.columns(2)
         if b1.button("💾 บันทึกการแก้ไข", use_container_width=True, key="sv1"):
             ni = np_ * nr / 100
             update_cells("loans", r["_row"], {2: nn.strip(), 3: nl.strip(), 4: str(nd.year + 543), 5: nd.strftime(FMT),
-                                              6: np_, 7: ni, 8: np_ + ni})
+                                              6: np_, 7: ni, 8: np_ + ni, 10: nnote.strip()})
             st.success("แก้ไขเรียบร้อย")
             st.rerun()
         ok = b2.checkbox("ยืนยันว่าต้องการลบรายการนี้", key="cf1")
@@ -645,12 +726,19 @@ elif page == PAGES[7]:
         keys = list(THEMES)
         theme = st.selectbox("ธีมสี", keys, index=keys.index(cur["theme_name"]) if cur.get("theme_name") in keys else 0)
         welcome = st.text_input("ข้อความต้อนรับ", cur.get("welcome_msg", ""))
-        bg = st.text_input("ลิงก์รูปพื้นหลัง (เว้นว่างถ้าไม่ใช้)", cur.get("bg_image", ""))
+        bg = st.text_input("ลิงก์รูปพื้นหลัง (เว้นว่างเพื่อใช้พื้นหลังธีมปกติ)", cur.get("bg_image", ""))
+        bgfile = st.file_uploader("หรืออัปโหลดรูปพื้นหลังจากเครื่อง", type=["png", "jpg", "jpeg"], key="bgfile")
+        if bgfile:
+            st.image(bgfile, caption="ตัวอย่างพื้นหลัง", width=320)
         p = THEMES[theme]["primary"]
         st.markdown(f"<div class='hero' style='border-color:{p}'><h2 style='color:{p}'>ตัวอย่างสีธีม</h2><p>{html.escape(welcome)}</p></div>",
                     unsafe_allow_html=True)
         if st.button("💾 บันทึกการตั้งค่า"):
-            save_setting(user, theme, welcome, bg.strip())
+            link = bg.strip()
+            if bgfile:
+                with st.spinner("กำลังอัปโหลดรูป..."):
+                    link = upload_slip(bgfile, "Backgrounds", direct=True) or link
+            save_setting(user, theme, welcome, link)
             st.success("บันทึกแล้ว")
             st.rerun()
     with t2:
@@ -668,6 +756,16 @@ elif page == PAGES[7]:
                 st.success("เปลี่ยนรหัสผ่านแล้ว")
     with t3:
         st.caption("ดาวน์โหลดข้อมูลทั้งหมดเก็บไว้เป็นไฟล์สำรอง")
+        try:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                for n, d in (("loans", loans_all), ("payments", pays_all), ("summary", summary)):
+                    if not d.empty:
+                        d.drop(columns=["_row", "dt"], errors="ignore").to_excel(w, sheet_name=n, index=False)
+            st.download_button("📥 Excel รวมทุกแผ่น", buf.getvalue(), "debt_backup.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception:
+            st.caption("ติดตั้ง openpyxl เพื่อดาวน์โหลดเป็น Excel (หรือยังไม่มีข้อมูล)")
         for label, df in (("รายการกู้", loans_all), ("รับชำระ", pays_all)):
             if not df.empty:
                 st.download_button(f"📥 {label} (CSV)", df.drop(columns=["_row", "dt"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
@@ -699,3 +797,43 @@ elif page == "👥 จัดการผู้ใช้":
         if st.button("🗑️ ลบผู้ใช้ที่เลือก", disabled=not ok):
             delete_row("users", others[others["username"] == d].iloc[0]["_row"])
             st.rerun()
+
+    st.divider()
+    st.subheader("🔐 ความเป็นเจ้าของข้อมูล")
+    st.caption("ทุกบัญชีเห็นเฉพาะข้อมูลที่ตัวเองบันทึก ตารางนี้แสดงเฉพาะจำนวนรายการ ไม่แสดงยอดเงิน")
+    lo, pa = load("loans"), load("payments")
+    def owners(df, label):
+        if df.empty:
+            return pd.Series(dtype=int, name=label)
+        return df["owner"].astype(str).str.strip().value_counts().rename(label)
+    own = pd.concat([owners(lo, "รายการกู้"), owners(pa, "รายการชำระ")], axis=1).fillna(0).astype(int)
+    own.index.name = "เจ้าของ"
+    st.dataframe(own, use_container_width=True)
+    if not own.empty and not us.empty:
+        m1, m2 = st.columns(2)
+        src = m1.selectbox("ย้ายข้อมูลจากเจ้าของ", own.index.tolist())
+        dst = m2.selectbox("ไปให้บัญชี", us["username"].astype(str).tolist())
+        okm = st.checkbox("ยืนยัน: ย้ายรายการกู้และรับชำระทั้งหมดของเจ้าของนี้", key="mv")
+        if st.button("🔀 ย้ายความเป็นเจ้าของ", disabled=not okm):
+            for nm, df in (("loans", lo), ("payments", pa)):
+                if not df.empty:
+                    rows = df[df["owner"].astype(str).str.strip() == src]["_row"].tolist()
+                    if rows:
+                        sh.worksheet(nm).update_cells([gspread.Cell(int(r), 1, dst) for r in rows], value_input_option="RAW")
+            load.clear()
+            log("ย้ายความเป็นเจ้าของ", f"{src} -> {dst}")
+            st.success("ย้ายเรียบร้อย")
+            st.rerun()
+
+# ---------- บันทึกการใช้งาน ----------
+elif page == "🧾 บันทึกการใช้งาน":
+    hero("🧾 บันทึกการใช้งาน", "ใครทำอะไรเมื่อไหร่ ตรวจย้อนหลังได้ (เฉพาะผู้ดูแลระบบ)")
+    al = load("audit_log")
+    if al.empty:
+        st.info("ยังไม่มีบันทึก")
+    else:
+        al = al.drop(columns=["_row", "dt"], errors="ignore").iloc[::-1]
+        who = st.selectbox("กรองตามผู้ใช้", ["ทั้งหมด"] + sorted(al["user"].astype(str).unique()))
+        if who != "ทั้งหมด":
+            al = al[al["user"].astype(str) == who]
+        st.dataframe(al.head(500), use_container_width=True, hide_index=True)
