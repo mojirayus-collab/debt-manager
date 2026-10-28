@@ -5,3 +5,4 @@ oauth2client
 plotly
 pytz
 google-api-python-client
+openpyxl
